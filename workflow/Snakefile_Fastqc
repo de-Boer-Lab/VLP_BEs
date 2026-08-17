@@ -1,0 +1,99 @@
+# ── Snakefile:FastQC ─────────────────────
+
+configfile: "config/config.yaml"
+
+import os
+import pandas as pd
+
+RAW_BASE = f"{config['raw_base']}"
+MAPQ = config.get("mapq", 20)
+BARCODE_ERROR_RATE = config.get("barcode_error_rate", 0.17)
+
+# -----------------------------
+# Load sample sheet
+# samples.tsv columns:
+# sample    base_editor    dose
+# -----------------------------
+SAMPLES = pd.read_csv("config/samples.tsv", sep="\t")
+sample_names = SAMPLES["sample"].tolist()
+
+sample_to_be = dict(zip(SAMPLES["sample"], SAMPLES["base_editor"]))
+sample_to_dose = dict(zip(SAMPLES["sample"], SAMPLES["dose"]))
+
+def get_r1(sample):
+    return f"{RAW_BASE}/{sample}/{sample}_R1.fastq.gz"
+
+def get_r2(sample):
+    return f"{RAW_BASE}/{sample}/{sample}_R2.fastq.gz"
+
+
+rule all:
+    input:
+        "results/qc/multiqc_report.html",
+        expand("results/merged/{sample}.merged.fastq.gz", sample=sample_names),
+
+rule fastqc_raw:
+    input:
+        r1=lambda wc: get_r1(wc.sample),
+        r2=lambda wc: get_r2(wc.sample)
+    output:
+        html1="results/qc/raw/{sample}_R1_fastqc.html",
+        zip1="results/qc/raw/{sample}_R1_fastqc.zip",
+        html2="results/qc/raw/{sample}_R2_fastqc.html",
+        zip2="results/qc/raw/{sample}_R2_fastqc.zip"
+    threads: 2
+    shell:
+        r"""
+        mkdir -p results/qc/raw
+        fastqc -t {threads} -o results/qc/raw {input.r1} {input.r2}
+        """
+
+
+rule merge_reads:
+    input:
+        r1=lambda wc: get_r1(wc.sample),
+        r2=lambda wc: get_r2(wc.sample)
+    output:
+        merged="results/merged/{sample}.merged.fastq.gz",
+        unmerged_r1=temp("results/merged/{sample}.unassembled.forward.fastq"),
+        unmerged_r2=temp("results/merged/{sample}.unassembled.reverse.fastq"),
+        discarded=temp("results/merged/{sample}.discarded.fastq"),
+        assembled_fastq=temp("results/merged/{sample}.assembled.fastq")
+    threads: 8
+    shell:
+        r"""
+        mkdir -p results/merged
+        pear \
+          -f {input.r1} \
+          -r {input.r2} \
+          -o results/merged/{wildcards.sample} \
+          -j {threads}
+        gzip -c {output.assembled_fastq} > {output.merged}
+        """
+
+
+rule fastqc_merged:
+    input:
+        "results/merged/{sample}.merged.fastq.gz"
+    output:
+        html="results/qc/merged/{sample}.merged_fastqc.html",
+        zip="results/qc/merged/{sample}.merged_fastqc.zip"
+    threads: 2
+    shell:
+        r"""
+        mkdir -p results/qc/merged
+        fastqc -t {threads} -o results/qc/merged {input}
+        """
+
+rule multiqc:
+    input:
+        expand("results/qc/raw/{sample}_R1_fastqc.zip", sample=sample_names),
+        expand("results/qc/raw/{sample}_R2_fastqc.zip", sample=sample_names),
+        expand("results/qc/merged/{sample}.merged_fastqc.zip", sample=sample_names)
+    output:
+        "results/qc/multiqc_report.html"
+    shell:
+        r"""
+        mkdir -p results/qc
+        multiqc results/qc -o results/qc
+        """

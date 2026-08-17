@@ -1,0 +1,40 @@
+raw_base: "../data/seq_data"
+
+# mapping quality threshold for target alignment
+mapq: 20
+
+# cutadapt barcode matching error rate
+barcode_error_rate: 0.17
+
+# ── CRISPRessoPooled pipeline ──────────────────────────────────────────────
+
+# Demultiplexed per-replicate FASTQs (output of existing pipeline)
+replicates_dir: "../results/replicates"
+
+# Amplicon + sgRNA definitions
+amplicon_file: "config/amplicons.txt"
+
+# Where CRISPResso results will be written
+crispresso_outdir: "../results/crispresso"
+
+# Output directory for CRISPRessoAggregate results (separate from per-sample results)
+crispresso_aggregate_outdir: "../results/crispresso_aggregated"
+
+# Replicate indices found in every sample folder
+replicates:
+  - 1
+  - 2
+  - 3
+
+# ── CRISPRessoPooled parameters ────────────────────────────────────────────
+crispresso_params:
+  min_reads_to_use_region: 1000
+  min_frequency_alleles_around_cut: 0.2
+  plot_window_size: 10
+  quantification_window_center: -10
+  quantification_window_size: 10
+
+# Threads per CRISPRessoPooled job
+crispresso_threads: 8
+
+

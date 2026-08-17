@@ -1,0 +1,178 @@
+# ── Snakefile: CRISPRessoPooled + CRISPRessoAggregate ─────────────────────
+
+import os
+from collections import defaultdict
+import pandas as pd
+
+configfile: "config/config.yaml"
+
+# ── Load sample sheet ──────────────────────────────────────────────────────
+samples_df   = pd.read_csv("config/samples.tsv", sep="\t")
+samples_df   = samples_df.set_index("sample", drop=False)
+SAMPLES      = samples_df["sample"].tolist()
+REPS         = config["replicates"]
+
+AMPLICON     = config["amplicon_file"]
+REPL_DIR     = config["replicates_dir"]
+OUTDIR       = config["crispresso_outdir"]
+AGGR_OUTDIR  = config["crispresso_aggregate_outdir"]
+THREADS      = config["crispresso_threads"]
+P            = config["crispresso_params"]
+
+# ── Base editor → sample list lookup ──────────────────────────────────────
+BE_SAMPLES = defaultdict(list)
+for _, row in samples_df.iterrows():
+    BE_SAMPLES[row["base_editor"]].append(row["sample"])
+BASE_EDITORS = list(BE_SAMPLES.keys())
+
+# ── Helper functions ───────────────────────────────────────────────────────
+def rep_fastq(sample, rep):
+    return os.path.join(REPL_DIR, sample, f"{sample}_rep{rep}.fastq.gz")
+
+def rep_report(sample, rep):
+    return os.path.join(
+        OUTDIR, sample, f"rep{rep}",
+        f"CRISPRessoPooled_on_{sample}_rep{rep}",
+        "CRISPResso2Pooled_info.json"
+    )
+
+def aggregate_output(base_editor, rep):
+    return os.path.join(
+        AGGR_OUTDIR, base_editor, f"rep{rep}",
+        f"CRISPRessoAggregate_on_{base_editor}_rep{rep}",
+        "CRISPResso2Aggregate_info.json"
+    )
+
+# ── Target ─────────────────────────────────────────────────────────────────
+rule all:
+    input:
+        [rep_report(s, r) for s in SAMPLES for r in REPS],
+        os.path.join(OUTDIR, "summary", "editing_summary.tsv"),
+        [aggregate_output(be, r) for be in BASE_EDITORS for r in REPS]
+
+# ── CRISPRessoPooled: one job per sample × replicate ──────────────────────
+rule crispresso_pooled:
+    input:
+        fastq   = lambda wc: rep_fastq(wc.sample, wc.rep),
+        ampfile = AMPLICON
+    output:
+        report  = os.path.join(
+            OUTDIR, "{sample}", "rep{rep}",
+            "CRISPRessoPooled_on_{sample}_rep{rep}",
+            "CRISPResso2Pooled_info.json"
+        )
+    params:
+        outdir       = lambda wc: os.path.join(OUTDIR, wc.sample, f"rep{wc.rep}"),
+        name         = lambda wc: f"{wc.sample}_rep{wc.rep}",
+        min_reads    = P["min_reads_to_use_region"],
+        min_freq     = P["min_frequency_alleles_around_cut"],
+        plot_window  = P["plot_window_size"],
+        quant_center = P["quantification_window_center"],
+        quant_size   = P["quantification_window_size"]
+    threads: THREADS
+    log:
+        os.path.join(OUTDIR, "logs", "{sample}_rep{rep}.log")
+    shell:
+        """
+        mkdir -p {params.outdir}
+        CRISPRessoPooled \
+            -r1 {input.fastq} \
+            --amplicons_file {input.ampfile} \
+            --name {params.name} \
+            --output_folder {params.outdir} \
+            --min_reads_to_use_region {params.min_reads} \
+            --min_frequency_alleles_around_cut_to_plot {params.min_freq} \
+            --plot_window_size {params.plot_window} \
+            --quantification_window_center {params.quant_center} \
+            --quantification_window_size {params.quant_size} \
+            --base_editor_output \
+            --n_processes {threads} \
+        > {log} 2>&1
+        """
+
+# ── Aggregate editing results across all samples × replicates ──────────────
+rule aggregate_results:
+    input:
+        reports = [rep_report(s, r) for s in SAMPLES for r in REPS]
+    output:
+        summary = os.path.join(OUTDIR, "summary", "editing_summary.tsv")
+    params:
+        outdir  = OUTDIR,
+        samples = SAMPLES,
+        reps    = REPS,
+        meta    = samples_df[["sample", "base_editor", "dose"]].to_dict("records")
+    run:
+        import os
+        import pandas as pd
+
+        meta_map = {r["sample"]: r for r in params.meta}
+        rows = []
+
+        for sample in params.samples:
+            for rep in params.reps:
+                f = os.path.join(
+                    params.outdir, sample, f"rep{rep}",
+                    f"CRISPRessoPooled_on_{sample}_rep{rep}",
+                    "SAMPLES_QUANTIFICATION_SUMMARY.txt"
+                )
+                if not os.path.exists(f):
+                    print(f"WARNING: missing {f}, skipping")
+                    continue
+                df = pd.read_csv(f, sep="\t")
+                df.insert(0, "Replicate",   f"rep{rep}")
+                df.insert(0, "Dose",        meta_map[sample]["dose"])
+                df.insert(0, "Base_Editor", meta_map[sample]["base_editor"])
+                df.insert(0, "Sample",      sample)
+                rows.append(df)
+
+        combined = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+        os.makedirs(os.path.dirname(output.summary), exist_ok=True)
+        combined.to_csv(output.summary, sep="\t", index=False)
+        print(f"Written {len(rows)} summary files → {output.summary}")
+
+# ── CRISPRessoAggregate: one job per base_editor × replicate ──────────────
+# --prefix takes a single directory; we stage symlinks to all dose folders
+# into one staging dir so CRISPRessoAggregate can find them all.
+rule crispresso_aggregate:
+    input:
+        jsons = lambda wc: [
+            rep_report(s, wc.rep)
+            for s in BE_SAMPLES[wc.base_editor]
+        ]
+    output:
+        info = os.path.join(
+            AGGR_OUTDIR, "{base_editor}", "rep{rep}",
+            "CRISPRessoAggregate_on_{base_editor}_rep{rep}",
+            "CRISPResso2Aggregate_info.json"
+        )
+    params:
+        # Newline-separated src dirs — shell will symlink each into staging
+        src_dirs = lambda wc: "\n".join([
+            os.path.join(OUTDIR, s, f"rep{wc.rep}",
+                         f"CRISPRessoPooled_on_{s}_rep{wc.rep}")
+            for s in BE_SAMPLES[wc.base_editor]
+        ]),
+        staging  = lambda wc: os.path.join(
+            AGGR_OUTDIR, wc.base_editor, f"rep{wc.rep}", ".staging"
+        ),
+        outdir   = lambda wc: os.path.join(AGGR_OUTDIR, wc.base_editor, f"rep{wc.rep}"),
+        name     = lambda wc: f"{wc.base_editor}_rep{wc.rep}"
+    log:
+        os.path.join(AGGR_OUTDIR, "logs", "aggregate_{base_editor}_rep{rep}.log")
+    shell:
+        """
+        mkdir -p {params.staging} {params.outdir}
+        export MPLCONFIGDIR=/tmp/matplotlib_$$
+
+        # Symlink each dose's CRISPRessoPooled output dir into staging
+        printf '{params.src_dirs}\n' | while read src; do
+            ln -sfn "$src" "{params.staging}/$(basename $src)"
+        done
+
+        # CRISPRessoAggregate writes output to cwd — cd into outdir first
+        cd {params.outdir}
+        CRISPRessoAggregate \
+            --prefix {params.staging} \
+            --name {params.name} \
+        >> {log} 2>&1
+        """

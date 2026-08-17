@@ -1,0 +1,144 @@
+
+# ── Snakefile:Replicate Demultiplexing ─────────────────────
+
+configfile: "config/config.yaml"
+
+import os
+import pandas as pd
+
+RAW_BASE = f"{config['raw_base']}"
+MAPQ = config.get("mapq", 20)
+BARCODE_ERROR_RATE = config.get("barcode_error_rate", 0.17)
+
+
+# -----------------------------
+# Load sample sheet
+# samples.tsv columns:
+# sample    base_editor    dose
+# -----------------------------
+SAMPLES = pd.read_csv("config/samples.tsv", sep="\t")
+sample_names = SAMPLES["sample"].tolist()
+
+sample_to_be = dict(zip(SAMPLES["sample"], SAMPLES["base_editor"]))
+sample_to_dose = dict(zip(SAMPLES["sample"], SAMPLES["dose"]))
+
+def get_r1(sample):
+    return f"{RAW_BASE}/{sample}/{sample}_R1.fastq.gz"
+
+def get_r2(sample):
+    return f"{RAW_BASE}/{sample}/{sample}_R2.fastq.gz"
+
+# -----------------------------
+# Load barcode table
+# barcodes.tsv columns:
+#   replicate    barcode
+# -----------------------------
+BARCODES = pd.read_csv("config/barcodes.tsv", sep="\t")
+replicates = sorted(BARCODES["replicate"].tolist())
+BARCODE_MAP = dict(zip(BARCODES["replicate"], BARCODES["barcode"]))
+
+rule all:
+    input:
+        # Per-replicate FASTQs: one file per sample/replicate
+        expand(
+            "results/replicates/{sample}/{sample}_{rep}.fastq.gz",
+            sample=sample_names, rep=replicates
+        ),
+        # Unassigned reads per sample
+        expand(
+            "results/replicates/{sample}/{sample}_unassigned.fastq.gz",
+            sample=sample_names
+        ),
+        # Replicate-level read counts per sample
+        expand(
+            "results/replicates/{sample}/{sample}.replicate_counts.tsv",
+            sample=sample_names
+        ),
+        # Combined summary
+        "results/replicates/summaries/combined_read_counts.tsv"
+
+rule demux_replicates:
+    """
+    Demultiplex a merged per-sample FASTQ into per-replicate FASTQs using cutadapt.
+    Barcodes are anchored at the 5' end (^BARCODE).
+    Output files are written to results/replicates/{sample}/.
+    """
+    input:
+        fq="results/merged/{sample}.merged.fastq.gz"
+    output:
+        report="results/replicates/{sample}/{sample}.cutadapt.report.txt",
+        unassigned="results/replicates/{sample}/{sample}_unassigned.fastq.gz",
+        rep_fastqs=expand(
+            "results/replicates/{{sample}}/{{sample}}_{rep}.fastq.gz",
+            rep=replicates
+        )
+    params:
+        error_rate=BARCODE_ERROR_RATE,
+        barcode_map=BARCODE_MAP
+    run:
+        import subprocess
+
+        outdir = f"results/replicates/{wildcards.sample}"
+        os.makedirs(outdir, exist_ok=True)
+
+        cmd = [
+            "cutadapt",
+            "-e", str(params.error_rate),
+            "--no-indels",
+        ]
+
+        # Register each replicate barcode as a named 5'-anchored adapter
+        for rep, bc in params.barcode_map.items():
+            cmd.extend(["-g", f"{rep}=^{bc}"])
+
+        # cutadapt uses {name} as a placeholder for the matched adapter name
+        cmd.extend([
+            "-o", f"{outdir}/{wildcards.sample}_{{name}}.fastq.gz",
+            "--untrimmed-output", output.unassigned,
+            input.fq
+        ])
+
+        with open(output.report, "w") as repfh:
+            subprocess.run(cmd, check=True, stdout=repfh, stderr=subprocess.STDOUT)
+
+rule count_replicate_fastqs:
+    """
+    Count reads in each per-replicate FASTQ and the unassigned FASTQ.
+    Output TSV is written in the same sample directory.
+    """
+    input:
+        rep_fastqs=expand(
+            "results/replicates/{{sample}}/{{sample}}_{rep}.fastq.gz",
+            rep=replicates
+        ),
+        unassigned="results/replicates/{sample}/{sample}_unassigned.fastq.gz"
+    output:
+        "results/replicates/{sample}/{sample}.replicate_counts.tsv"
+    shell:
+        r"""
+        python workflow/scripts/count_fastqs.py \
+          --inputs {input.rep_fastqs} {input.unassigned} \
+          --output {output}
+        """
+
+rule combine_read_count_summaries:
+    """
+    Merge all per-sample replicate counts into one summary TSV.
+    Output lives in results/replicates/summaries/.
+    """
+    input:
+        sample_sheet="config/samples.tsv",
+        replicate_counts=expand(
+            "results/replicates/{sample}/{sample}.replicate_counts.tsv",
+            sample=sample_names
+        )
+    output:
+        "results/replicates/summaries/combined_read_counts.tsv"
+    shell:
+        r"""
+        mkdir -p results/replicates/summaries
+        python workflow/scripts/combine_read_counts.py \
+          --sample-sheet {input.sample_sheet} \
+          --replicate-counts {input.replicate_counts} \
+          --output {output}
+        """
