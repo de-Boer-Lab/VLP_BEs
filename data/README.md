@@ -1,15 +1,16 @@
 # data/
 
-Raw sequencing input for the pipeline. **Not tracked in git** — raw FASTQs are too
-large for the repo; only this README (and the empty `seq_data/` placeholder) is
-checked in. To run the pipeline from scratch, populate `seq_data/` yourself (see
-layout below) or point `raw_base` in [`../config/config.yaml`](../config/config.yaml)
-at wherever your raw data actually lives.
+Raw sequencing input for the pipeline. `seq_data/` is populated by running
+[`workflow/Snakefile_sra_download`](../workflow/README.md), which pulls each sample's
+FASTQ pair from SRA using [`../config/sra_accession_map.tsv`](../config/sra_accession_map.tsv).
+You can also point `raw_base` in [`../config/config.yaml`](../config/config.yaml) at
+your own pre-downloaded data instead.
 
 ## `seq_data/`
 
-Root directory referenced by `config.yaml`'s `raw_base: "../data/seq_data"`, read by
-`Snakefile_Fastqc` via its `get_r1`/`get_r2` helpers:
+Root directory referenced by `config.yaml`'s `raw_base: "./data/seq_data"`, read by
+both `Snakefile_sra_download` and `Snakefile_Fastqc` via shared `get_r1`/`get_r2`
+helpers:
 
 ```python
 def get_r1(sample):
@@ -33,7 +34,8 @@ data/seq_data/
 ...
 ```
 
-78 sample folders total (13 base editors × 6 doses `D0`–`D5`), each with 3 replicates
+76 sample folders total — 13 base editors × 6 doses (D0–D5), excpet AYBE and
+SPACE-DeltaCBE (D1–D5, no D0), each with 3 replicates and three target loci
 pooled together in one FASTQ pair — replicates are split out downstream by
 `Snakefile_demux` using the barcodes in
 [`../config/barcodes.tsv`](../config/barcodes.tsv), not by folder structure here.

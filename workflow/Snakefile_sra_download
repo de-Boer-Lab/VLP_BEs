@@ -1,0 +1,68 @@
+# Snakefile_sra_download
+#
+# Downloads and populates data/seq_data/ from SRA using a pre-built
+# sample -> SRR accession map (./config/sra_accession_map.tsv).
+#
+# Requires on PATH: sra-tools (prefetch, fasterq-dump)
+#   conda install -c bioconda -c conda-forge sra-tools
+
+import csv
+import os
+
+configfile: "./config/config.yaml"
+
+RAW_BASE    = config["raw_base"]                                   # e.g. "./data/seq_data"
+SRA_MAP_TSV = config.get("sra_map", "./config/sra_accession_map.tsv")
+
+def get_r1(sample):
+    return f"{RAW_BASE}/{sample}/{sample}_R1.fastq.gz"
+
+def get_r2(sample):
+    return f"{RAW_BASE}/{sample}/{sample}_R2.fastq.gz"
+
+def load_sample_map(path):
+    """sample -> srr"""
+    if not os.path.exists(path):
+        raise SystemExit(
+            f"ERROR: {path} not found. Place sra_accession_map.tsv in "
+            f"./config/ (or set 'sra_map' in config.yaml) before running."
+        )
+    mapping = {}
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f, delimiter="\t"):
+            mapping[row["sample"]] = row["srr"]
+    return mapping
+
+SRA_ACC = load_sample_map(SRA_MAP_TSV)
+SAMPLES = list(SRA_ACC.keys())
+
+
+rule download_all:
+    input:
+        [get_r1(s) for s in SAMPLES] + [get_r2(s) for s in SAMPLES]
+
+
+rule prefetch_sra:
+    output:
+        temp(directory("tmp_sra/{srr}"))
+    shell:
+        "prefetch {wildcards.srr} -O tmp_sra/"
+
+
+rule dump_and_place:
+    input:
+        sra = lambda wc: f"tmp_sra/{SRA_ACC[wc.sample]}"
+    output:
+        r1 = get_r1("{sample}"),
+        r2 = get_r2("{sample}")
+    params:
+        srr = lambda wc: SRA_ACC[wc.sample]
+    threads: 4
+    shell:
+        r"""
+        mkdir -p $(dirname {output.r1})
+        fasterq-dump --split-files --threads {threads} -O tmp_sra/ tmp_sra/{params.srr}/{params.srr}.sra
+        gzip -c tmp_sra/{params.srr}_1.fastq > {output.r1}
+        gzip -c tmp_sra/{params.srr}_2.fastq > {output.r2}
+        rm -f tmp_sra/{params.srr}_1.fastq tmp_sra/{params.srr}_2.fastq
+        """

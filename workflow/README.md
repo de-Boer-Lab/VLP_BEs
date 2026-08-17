@@ -7,6 +7,18 @@ root.
 
 ## Run order
 
+### 0. `Snakefile_sra_download` — fetch raw reads from SRA
+Environment: `be_analysis`
+
+```bash
+snakemake -s workflow/Snakefile_sra_download --cores 8
+```
+
+Reads `config/sra_accession_map.tsv` (sample → SRR accession), then for each sample:
+`prefetch`s the run and `fasterq-dump`s + gzips it into
+`data/seq_data/{sample}/{sample}_R1.fastq.gz` / `_R2.fastq.gz`. Skip this step if you
+already have raw FASTQs in that layout (see [`../data/README.md`](../data/README.md)).
+
 ### 1. `Snakefile_Fastqc` — QC and read merging
 Environment: `be_preprocessing` ([`../envs/preprocessing.yaml`](../envs/preprocessing.yaml))
 

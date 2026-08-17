@@ -36,7 +36,7 @@ dosage_colors         <- setNames(RColorBrewer::brewer.pal(6, "Blues"), dosage_l
 # --- Editor panel (13 benchmarked editors) ---
 A_editors   <- c("ABE8e", "ABE8e-SpRY", "ABEmax-NG", "AXBE", "AYBE")
 C_editors   <- c("CBE6d", "TadCBEd", "CGBE1", "CGBE1-NG", "miniCGBE1-SpRY")
-AC_editors  <- c("SPACE", "SPACE-DeltaUGI", "SPACE-NG")
+AC_editors  <- c("SPACE", "SPACE-DeltaCBE", "SPACE-NG")
 
 # --- Genomic targets ---
 targets <- c("PDCD1", "B2M", "HEK3")
